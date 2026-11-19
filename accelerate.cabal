@@ -678,6 +678,7 @@ library nofib
   build-depends:
         , hedgehog                      >= 0.5
         , tasty                         >= 0.11
+        , tasty-ant-xml                 >= 1.1
         , tasty-expected-failure        >= 0.11
         , tasty-hedgehog                >= 0.1
         , tasty-hunit                   >= 0.9

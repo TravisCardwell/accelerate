@@ -34,6 +34,8 @@ import Data.Array.Accelerate.Test.NoFib.Issues
 import Data.Array.Accelerate.Test.NoFib.Misc
 
 import Test.Tasty.Runners
+import Test.Tasty.Runners.AntXML
+import Test.Tasty.Ingredients
 import Test.Tasty.Ingredients.Rerun
 import System.Environment
 import Test.Tasty
@@ -42,7 +44,13 @@ import Test.Tasty
 nofib :: RunN -> TestTree -> IO ()
 nofib runN test_runq = do
   me <- getProgName
-  defaultMainWithIngredients [rerunningTests (nofibIngredient : defaultIngredients)]
+  defaultMainWithIngredients
+    [ rerunningTests
+        [ nofibIngredient
+        , listingTests
+        , composeReporters antXMLRunner consoleTestReporter
+        ]
+    ]
     $ localOption (NumThreads 1)                        -- run each test sequentially with many cores
     $ testGroup me
         [ test_sharing
