@@ -16,6 +16,7 @@ module Data.Array.Accelerate.Test.NoFib.Config
 import Data.Bits
 import Data.Proxy
 
+import qualified Hedgehog
 import Test.Tasty
 import Test.Tasty.Ingredients
 import Test.Tasty.Options
@@ -36,6 +37,7 @@ nofibIngredient =
     , Option (Proxy::Proxy TestWord32)
     , Option (Proxy::Proxy TestWord64)
     , Option (Proxy::Proxy Interpreter)
+    , Option (Proxy::Proxy TestFast)
     ]
 
 newtype TestAll     = TestAll     Bool deriving (Eq, Show)
@@ -51,6 +53,7 @@ newtype TestWord16  = TestWord16  Bool deriving (Eq, Show)
 newtype TestWord32  = TestWord32  Bool deriving (Eq, Show)
 newtype TestWord64  = TestWord64  Bool deriving (Eq, Show)
 newtype Interpreter = Interpreter Bool deriving (Eq, Show)
+newtype TestFast    = TestFast    Bool deriving (Eq, Show)
 
 instance IsOption TestAll where
   defaultValue = TestAll False
@@ -130,6 +133,11 @@ instance IsOption Interpreter where
   optionName = return "interpreter"
   optionHelp = return "I am an interpreter (skip some tests)"
 
+instance IsOption TestFast where
+  defaultValue = TestFast False
+  parseValue = fmap TestFast . safeReadBool
+  optionName = return "fast"
+  optionHelp = return "Run a reduced version of the test suite (fewer test cases, smaller inputs, skip some tests)"
 
 class IsOption a => TestConfig a where
   at :: TestTree -> TestTree
@@ -167,3 +175,8 @@ instance TestConfig TestWord32 where
 instance TestConfig TestWord64 where
   at t = askOption $ \(TestWord64 v) -> if v then t else testGroup "Word64" []
 
+askFast :: (Bool -> TestTree) -> TestTree
+askFast k = askOption $ \(TestFast fast) -> k fast
+
+fastTestLimit :: Hedgehog.TestLimit
+fastTestLimit = 20

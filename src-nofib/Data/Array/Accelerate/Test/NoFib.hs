@@ -33,10 +33,12 @@ import Data.Array.Accelerate.Test.NoFib.Spectral
 import Data.Array.Accelerate.Test.NoFib.Issues
 import Data.Array.Accelerate.Test.NoFib.Misc
 
+import Control.Applicative ( (<|>) )
 import Test.Tasty.Runners
 import Test.Tasty.Runners.AntXML
 import Test.Tasty.Ingredients
 import Test.Tasty.Ingredients.Rerun
+import Test.Tasty.Hedgehog ( HedgehogTestLimit(..) )
 import System.Environment
 import Test.Tasty
 
@@ -52,6 +54,7 @@ nofib runN test_runq = do
         ]
     ]
     $ localOption (NumThreads 1)                        -- run each test sequentially with many cores
+    $ fastMode
     $ testGroup me
         [ test_sharing
         , test_prelude runN
@@ -61,3 +64,10 @@ nofib runN test_runq = do
         , test_misc runN
         , test_runq
         ]
+  where
+    -- When in fast mode, set test limit /unless/ @--hedgehog-tests@ specified
+    fastMode :: TestTree -> TestTree
+    fastMode testTree = askFast $ \case
+      False -> testTree
+      True  -> flip adjustOption testTree $ \(HedgehogTestLimit limit) ->
+        HedgehogTestLimit (limit <|> Just fastTestLimit)
