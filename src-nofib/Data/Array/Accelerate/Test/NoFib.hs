@@ -53,7 +53,6 @@ nofib runN test_runq = do
         , composeReporters antXMLRunner consoleTestReporter
         ]
     ]
-    $ localOption (NumThreads 1)                        -- run each test sequentially with many cores
     $ fastMode
     $ testGroup me
         [ test_sharing
