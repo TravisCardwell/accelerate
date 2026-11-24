@@ -36,10 +36,19 @@ dim0 = return Z
 dim1 :: Gen DIM1
 dim1 = (Z :.) <$> Gen.int (Range.linear 0 1024)
 
+dim1In :: Int -> Int -> Gen DIM1
+dim1In lo hi = (Z :.) <$> Gen.int (Range.linear lo hi)
+
 dim2 :: Gen DIM2
 dim2 = do
   x <- Gen.int (Range.linear 0 128)
   y <- Gen.int (Range.linear 0 48)
+  return (Z :. y :. x)
+
+dim2In :: Int -> Int -> Gen DIM2
+dim2In lo hi = do
+  x <- Gen.int (Range.linear lo hi)
+  y <- Gen.int (Range.linear lo hi)
   return (Z :. y :. x)
 
 dim3 :: Gen DIM3
@@ -47,6 +56,13 @@ dim3 = do
   x <- Gen.int (Range.linear 0 64)
   y <- Gen.int (Range.linear 0 32)
   z <- Gen.int (Range.linear 0 16)
+  return (Z :. z :. y :. x)
+
+dim3In :: Int -> Int -> Gen DIM3
+dim3In lo hi = do
+  x <- Gen.int (Range.linear lo hi)
+  y <- Gen.int (Range.linear lo hi)
+  z <- Gen.int (Range.linear lo hi)
   return (Z :. z :. y :. x)
 
 array :: (Shape sh, Elt e) => sh -> Gen e -> Gen (Array sh e)

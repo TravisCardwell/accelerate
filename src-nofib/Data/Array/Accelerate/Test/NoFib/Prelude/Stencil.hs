@@ -36,56 +36,223 @@ import Test.Tasty.Hedgehog
 
 
 test_stencil :: RunN -> TestTree
-test_stencil runN =
+test_stencil runN = askFast $ \fast ->
   testGroup "stencil"
-    [ at @TestInt8   $ testElt i8
-    , at @TestInt16  $ testElt i16
-    , at @TestInt32  $ testElt i32
-    , at @TestInt64  $ testElt i64
-    , at @TestWord8  $ testElt w8
-    , at @TestWord16 $ testElt w16
-    , at @TestWord32 $ testElt w32
-    , at @TestWord64 $ testElt w64
-    , at @TestHalf   $ testElt f16
-    , at @TestFloat  $ testElt f32
-    , at @TestDouble $ testElt f64
+    [ at @TestInt8   $ testElt fast i8
+    , at @TestInt16  $ testElt fast i16
+    , at @TestInt32  $ testElt fast i32
+    , at @TestInt64  $ testElt fast i64
+    , at @TestWord8  $ testElt fast w8
+    , at @TestWord16 $ testElt fast w16
+    , at @TestWord32 $ testElt fast w32
+    , at @TestWord64 $ testElt fast w64
+    , at @TestHalf   $ testElt fast f16
+    , at @TestFloat  $ testElt fast f32
+    , at @TestDouble $ testElt fast f64
     ]
   where
     testElt
-        :: forall a. (P.Num a, A.Num a, Similar a, Show a)
-        => Gen a
+        :: forall e. (A.Num e, P.Num e, Show e, Similar e)
+        => Bool  -- ^ Fast mode?
+        -> Gen e
         -> TestTree
-    testElt e =
-      testGroup (show (eltR @a))
+    testElt fast e =
+      testGroup (show (eltR @e)) $
         [ testDim1
         , testDim2
         , testDim3
         ]
+        P.++
+        -- More extensive tests do not run in fast mode because a kernel is
+        -- compiled for each test case.
+        [ testStatic | P.not fast ]
       where
+        (max1, max2, max3)
+          | fast      = ( 64, 24, 12)
+          | otherwise = (256, 96, 32)
+
         testDim1 :: TestTree
         testDim1 =
           testGroup "DIM1"
-            [ testProperty "stencil3"     $ test_stencil3 runN e
-            , testProperty "stencil5"     $ test_stencil5 runN e
-            , testProperty "stencil7"     $ test_stencil7 runN e
-            , testProperty "stencil9"     $ test_stencil9 runN e
+            [ testProperty "stencil3" $
+                prop_stencil runN 3 (dim1In 2 max1) e flatten3 flatten3 stencil3Ref
+            , testProperty "stencil5" $
+                prop_stencil runN 5 (dim1In 3 max1) e flatten5 flatten5 stencil5Ref
+            , testProperty "stencil7" $
+                prop_stencil runN 7 (dim1In 4 max1) e flatten7 flatten7 stencil7Ref
+            , testProperty "stencil9" $
+                prop_stencil runN 9 (dim1In 5 max1) e flatten9 flatten9 stencil9Ref
             ]
 
         testDim2 :: TestTree
         testDim2 =
           testGroup "DIM2"
-            [ testProperty "stencil3x3"   $ test_stencil3x3 runN e
-            , testProperty "stencil5x5"   $ test_stencil5x5 runN e
-            , testProperty "stencil7x7"   $ test_stencil7x7 runN e
-            , testProperty "stencil9x9"   $ test_stencil9x9 runN e
+            [ testProperty "stencil3x3" $
+                prop_stencil runN  9 (dim2In 2 max2) e flatten3x3 flatten3x3 stencil3x3Ref
+            , testProperty "stencil5x5" $
+                prop_stencil runN 25 (dim2In 3 max2) e flatten5x5 flatten5x5 stencil5x5Ref
+            , testProperty "stencil7x7" $
+                prop_stencil runN 49 (dim2In 4 max2) e flatten7x7 flatten7x7 stencil7x7Ref
+            , testProperty "stencil9x9" $
+                prop_stencil runN 81 (dim2In 5 max2) e flatten9x9 flatten9x9 stencil9x9Ref
             ]
 
         testDim3 :: TestTree
         testDim3 =
           testGroup "DIM3"
-            [ testProperty "stencil3x3x3" $ test_stencil3x3x3 runN e
+            [ testProperty "stencil3x3x3" $
+                prop_stencil runN 27 (dim3In 2 max3) e flatten3x3x3 flatten3x3x3 stencil3x3x3Ref
             ]
 
+        testStatic :: TestTree
+        testStatic =
+          let conf = withTests 10
+          in  testGroup "static"
+                [ testProperty "stencil3"     $ conf $ test_stencil3     runN e
+                , testProperty "stencil5"     $ conf $ test_stencil5     runN e
+                , testProperty "stencil7"     $ conf $ test_stencil7     runN e
+                , testProperty "stencil9"     $ conf $ test_stencil9     runN e
+                , testProperty "stencil3x3"   $ conf $ test_stencil3x3   runN e
+                , testProperty "stencil5x5"   $ conf $ test_stencil5x5   runN e
+                , testProperty "stencil7x7"   $ conf $ test_stencil7x7   runN e
+                , testProperty "stencil9x9"   $ conf $ test_stencil9x9   runN e
+                , testProperty "stencil3x3x3" $ conf $ test_stencil3x3x3 runN e
+                ]
+
+{-------------------------------------------------------------------------------
+  Compile once
+-------------------------------------------------------------------------------}
+
+-- | Kernels for a given shape and element type
+--
+-- The stencil function sums elements selected by a boolean mask over the
+-- flattened (row-major) stencil neighbourhood.
+--
+-- The fields are lazy, so each kernel is compiled on first use.
+data Kernels sh e = Kernels
+  { kClamp    :: Vector Bool             -> Array sh e -> Array sh e
+  , kWrap     :: Vector Bool             -> Array sh e -> Array sh e
+  , kMirror   :: Vector Bool             -> Array sh e -> Array sh e
+  , kConstant :: Vector Bool -> Scalar e -> Array sh e -> Array sh e
+  }
+
+-- | Construct 'Kernels'
+kernels
+  :: forall sh e stencil. (A.Num e, Shape sh, Stencil sh e stencil)
+  => RunN
+  -> (stencil -> [Exp e])  -- ^ Flattening function
+  -> Kernels sh e
+kernels runN flatten' = Kernels
+  { kClamp    = runN $ \mask   xs -> A.stencil (masked mask) A.clamp  xs
+  , kWrap     = runN $ \mask   xs -> A.stencil (masked mask) A.wrap   xs
+  , kMirror   = runN $ \mask   xs -> A.stencil (masked mask) A.mirror xs
+  , kConstant = runN $ \mask c xs ->
+      let fn = A.function $ \_ -> A.the c
+      in  A.stencil (masked mask) fn xs
+  }
+  where
+    masked :: Acc (Vector Bool) -> stencil -> Exp e
+    masked mask st = P.sum
+      [ (mask A.! I1 (constant i)) ? (x, 0)
+      | (i, x) <- P.zip [0..] (flatten' st)
+      ]
+
+-- | Stencil function reference implementation
+maskedRef :: P.Num e => [Bool] -> [e] -> e
+maskedRef mask xs = P.sum
+  [ if b then x else 0
+  | (b, x) <- P.zip mask xs
+  ]
+
+-- | Run a 'Kernels' kernel with the given selection mask
+runKernels
+  :: Elt e
+  => Kernels sh e
+  -> [Bool]            -- ^ Selection mask
+  -> SimpleBoundary e  -- ^ Boundary condition
+  -> Array sh e
+  -> Array sh e
+runKernels k mask = \case
+    Clamp      -> kClamp    k mask'
+    Wrap       -> kWrap     k mask'
+    Mirror     -> kMirror   k mask'
+    Constant c -> kConstant k mask' (S.fromList Z [c])
+  where
+    mask' :: Vector Bool
+    mask' = S.fromList (Z :. P.length mask) mask
+
+{-# NOINLINE prop_stencil #-}
+prop_stencil
+  :: forall sh e stencil stencilRef.
+     ( A.Num e, P.Num e, Show e, Similar e
+     , P.Eq sh, Shape sh, Show sh
+     , Stencil sh e stencil
+     )
+  => RunN
+  -> Int                   -- ^ Number of elements in the stencil
+  -> Gen sh                -- ^ Shape of the input array
+  -> Gen e
+  -> (stencil -> [Exp e])  -- ^ Flatten the stencil neighborhood
+  -> (stencilRef -> [e])   -- ^ Flatten (for reference implementation)
+  -> ((stencilRef -> e) -> SimpleBoundary e -> Array sh e -> Array sh e)
+  -- ^ Reference implementation
+  -> Property
+prop_stencil runN n shape' e flatten' flattenRef ref =
+  property $ do
+    sh   <- forAll shape'
+    xs   <- forAll (array sh e)
+    b    <- forAll (boundary e)
+    mask <- forAll (Gen.list (Range.singleton n) Gen.bool)
+    --
+    runKernels k mask b xs ~~~ ref (maskedRef mask . flattenRef) b xs
+  where
+    k :: Kernels sh e
+    k = kernels runN flatten'
+
+flatten3 :: (a,a,a) -> [a]
+flatten3 (x0,x1,x2) = [x0,x1,x2]
+
+flatten5 :: (a,a,a,a,a) -> [a]
+flatten5 (x0,x1,x2,x3,x4) = [x0,x1,x2,x3,x4]
+
+flatten7 :: (a,a,a,a,a,a,a) -> [a]
+flatten7 (x0,x1,x2,x3,x4,x5,x6) = [x0,x1,x2,x3,x4,x5,x6]
+
+flatten9 :: (a,a,a,a,a,a,a,a,a) -> [a]
+flatten9 (x0,x1,x2,x3,x4,x5,x6,x7,x8) = [x0,x1,x2,x3,x4,x5,x6,x7,x8]
+
+flatten3x3 :: ((a,a,a),(a,a,a),(a,a,a)) -> [a]
+flatten3x3 = P.concatMap flatten3 . flatten3
+
+flatten5x5 :: ((a,a,a,a,a),(a,a,a,a,a),(a,a,a,a,a),(a,a,a,a,a),(a,a,a,a,a)) -> [a]
+flatten5x5 = P.concatMap flatten5 . flatten5
+
+flatten7x7
+  :: ( (a,a,a,a,a,a,a), (a,a,a,a,a,a,a), (a,a,a,a,a,a,a), (a,a,a,a,a,a,a)
+     , (a,a,a,a,a,a,a), (a,a,a,a,a,a,a), (a,a,a,a,a,a,a)
+     )
+  -> [a]
+flatten7x7 = P.concatMap flatten7 . flatten7
+
+flatten9x9
+  :: ( (a,a,a,a,a,a,a,a,a), (a,a,a,a,a,a,a,a,a), (a,a,a,a,a,a,a,a,a)
+     , (a,a,a,a,a,a,a,a,a), (a,a,a,a,a,a,a,a,a), (a,a,a,a,a,a,a,a,a)
+     , (a,a,a,a,a,a,a,a,a), (a,a,a,a,a,a,a,a,a), (a,a,a,a,a,a,a,a,a)
+     )
+  -> [a]
+flatten9x9 = P.concatMap flatten9 . flatten9
+
+flatten3x3x3
+  :: ( ((a,a,a),(a,a,a),(a,a,a))
+     , ((a,a,a),(a,a,a),(a,a,a))
+     , ((a,a,a),(a,a,a),(a,a,a))
+     )
+  -> [a]
+flatten3x3x3 = P.concatMap flatten3x3 . flatten3
+
+{-------------------------------------------------------------------------------
+  Compile per test case
+-------------------------------------------------------------------------------}
 
 {-# NOINLINE test_stencil3 #-}
 test_stencil3
